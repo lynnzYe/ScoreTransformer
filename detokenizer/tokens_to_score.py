@@ -249,7 +249,7 @@ def concatenated_to_regular(tokens):
     return regular_tokens
 
 # build music21 Score object from a token sequnece (string)
-def tokens_to_score(string, voice_numbering=False):
+def tokens_to_score(string, voice_numbering=False) -> stream.Score:
     R_str, L_str = split_R_L(string)
     R_tokens = R_str.split()
     L_tokens = L_str.split()
@@ -273,7 +273,7 @@ def tokens_to_score(string, voice_numbering=False):
 def split_R_L(string):
     tokens = string.split()
     tokens = concatenated_to_regular(tokens)
-    
+
     if 'L' in tokens:
         R = ' '.join(tokens[tokens.index('R')+1:tokens.index('L')])
         L = ' '.join(tokens[tokens.index('L')+1:])

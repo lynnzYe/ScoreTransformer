@@ -1,60 +1,70 @@
+import os
+import shutil
+import uuid
+import zipfile
+from fractions import Fraction
+
+import pretty_midi
 from bs4 import BeautifulSoup
 from bs4.element import Tag
-from fractions import Fraction
-import pretty_midi
 
-def attributes_to_tokens(attributes, staff=None): # tokenize 'attributes' section in MusicXML
+
+def attributes_to_tokens(attributes, staff=None):
+    """tokenize 'attributes' section in MusicXML"""
     tokens = []
     divisions = None
 
     for child in attributes.contents:
-        type_ = child.name
-        if type_ == 'divisions':
-            divisions = int(child.text)
-        elif type_ in ('clef', 'key', 'time'):
-            if staff is not None:
-                if 'number' in child.attrs and int(child['number']) != staff:
-                    continue
-            tokens.append(attribute_to_token(child))
+        match child.name:
+            case 'divisions':
+                divisions = int(child.text)
+            case 'clef' | 'key' | 'time':
+                if staff is not None:
+                    if 'number' in child.attrs and int(child['number']) != staff:
+                        break
+                tokens.append(attribute_to_token(child))
 
     return tokens, divisions
 
-def attribute_to_token(child): # clef, key signature, and time signature
-    type_ = child.name
-    if type_ == 'clef':
-        if child.sign.text == 'G':
-            return 'clef_treble'
-        elif child.sign.text == 'F':
-            return 'clef_bass'
-    elif type_ == 'key':
-        key = int(child.fifths.text)
-        if key < 0:
-            return f'key_flat_{abs(key)}'
-        elif key > 0:
-            return f'key_sharp_{key}'
-        else:
-            return f'key_natural_{key}'
-    elif type_ == 'time':
-        times = [int(c.text) for c in child.contents if isinstance(c, Tag)] # excluding '\n'
-        if times[1] == 2:
-            return f'time_{times[0]*2}/{times[1]*2}'
-        elif times[1] > 4:
-            fraction = str(Fraction(times[0], times[1]))
-            if int(fraction.split('/')[1]) == 2: # X/2
-                return f"time_{int(fraction.split('/')[0])*2}/{int(fraction.split('/')[0])*2}"
+def attribute_to_token(child):
+    """clef, key signature, and time signature"""
+    match child.name:
+        case 'clef':
+            if child.sign.text == 'G':
+                return 'clef_treble'
+            elif child.sign.text == 'F':
+                return 'clef_bass'
+        case 'key':
+            key = int(child.fifths.text)
+            if key < 0:
+                return f'key_flat_{abs(key)}'
+            elif key > 0:
+                return f'key_sharp_{key}'
             else:
-                return 'time_' + fraction
-        else:
-            return f'time_{times[0]}/{times[1]}'
+                return f'key_natural_{key}'
+        case 'time':
+            times = [int(c.text) for c in child.contents if isinstance(c, Tag)] # excluding '\n'
+            if times[1] == 2:
+                return f'time_{times[0]*2}/{times[1]*2}'
+            elif times[1] > 4:
+                fraction = str(Fraction(times[0], times[1]))
+                if int(fraction.split('/')[1]) == 2: # X/2
+                    return f"time_{int(fraction.split('/')[0])*2}/{int(fraction.split('/')[0])*2}"
+                else:
+                    return 'time_' + fraction
+            else:
+                return f'time_{times[0]}/{times[1]}'
 
-def aggregate_notes(voice_notes): # notes to chord
+def aggregate_notes(voice_notes):
+    """notes to chord"""
     for note in voice_notes[1:]:
         if note.chord is not None:
             last_note = note.find_previous('note')
             last_note.insert(0, note.pitch)
             note.decompose()
 
-def note_to_tokens(note, divisions=8, note_name=True): # notes and rests
+def note_to_tokens(note, divisions, note_name=True):
+    """notes and rests"""
     beam_translations = {'begin': 'start', 'end': 'stop', 'forward hook': 'partial-right', 'backward hook': 'partial-left'}
 
     if note.duration is None: # gracenote
@@ -96,15 +106,18 @@ def note_to_tokens(note, divisions=8, note_name=True): # notes and rests
 
     return tokens
 
-def element_segmentation(measure, soup, staff=None): # divide elements into three sections
+def element_segmentation(measure, soup, staff=None):
+    """divide elements into three sections"""
     voice_starts, voice_ends = {}, {}
     position = 0
     for element in measure.contents:
         if element.name == 'note':
             if element.duration is None: # gracenote
                 continue
-
-            voice = element.voice.text
+            if element.voice is not None:
+                voice = element.voice.text
+            else:
+                voice = 0
             duration = int(element.duration.text)
             if element.chord: # rewind for concurrent notes
                 position -= last_duration
@@ -225,24 +238,27 @@ def measures_to_tokens(measures, soup, staff=None, note_name=True):
 
     return tokens
 
-def load_MusicXML(mxml_path): # load MusicXML contents using BeautifulSoup
-    soup = BeautifulSoup(open(mxml_path, encoding='utf-8'), 'lxml-xml', from_encoding='utf-8') # MusicXML
+def MusicXML_to_tokens(mxl, note_name=True) -> list[str]:
+    if type(mxl) is str:
+        try:
+            with open(mxl, "r") as f:
+                soup = BeautifulSoup(f, 'lxml-xml', from_encoding='utf-8')
+        except UnicodeDecodeError as e:
+            print(mxl, e)
+            folder = uuid.uuid4()
+            try:
+                with zipfile.ZipFile(mxl, 'r') as zip_ref:
+                    zip_ref.extractall(f"/tmp/{folder}")
+                file = [f for f in os.listdir(f"/tmp/{folder}") if f.endswith(".xml") or f.endswith(".musicxml")][0]
+                with open(f"/tmp/{folder}/" + file, "r") as f:
+                    soup = BeautifulSoup(f, 'lxml-xml', from_encoding='utf-8')
+            finally:
+                shutil.rmtree(f"/tmp/{folder}")
+
     for tag in soup(string='\n'): # eliminate line breaks
         tag.extract()
 
-    parts = soup.find_all('part')
-
-    return [part.find_all('measure') for part in parts], soup
-
-def MusicXML_to_tokens(soup_or_mxml_path, note_name=True): # use this method
-    if type(soup_or_mxml_path) is str:
-        parts, soup = load_MusicXML(soup_or_mxml_path)
-    else:
-        soup = soup_or_mxml_path
-        for tag in soup(string='\n'): # eliminate line breaks
-            tag.extract()
-
-        parts = [part.find_all('measure') for part in soup.find_all('part')]
+    parts = [part.find_all('measure') for part in soup.find_all('part')]
 
     if len(parts) == 1:
         tokens = ['R'] + measures_to_tokens(parts[0], soup, staff=1, note_name=note_name)
@@ -250,5 +266,9 @@ def MusicXML_to_tokens(soup_or_mxml_path, note_name=True): # use this method
     elif len(parts) == 2:
         tokens = ['R'] + measures_to_tokens(parts[0], soup, note_name=note_name)
         tokens += ['L'] + measures_to_tokens(parts[1], soup, note_name=note_name)
+    else:
+        tokens = ['R'] + measures_to_tokens(parts[0], soup, note_name=note_name)
+        tokens += ['L'] + measures_to_tokens(parts[1], soup, note_name=note_name)
+        print(f'WARNING: Piano MusicXML must have 1 or 2 parts, not {len(parts)} - using first two parts only.')
 
     return tokens
